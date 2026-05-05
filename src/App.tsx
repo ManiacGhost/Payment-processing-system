@@ -1,313 +1,382 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Plus, 
-  RefreshCcw, 
-  CheckCircle2, 
-  XCircle, 
-  Clock, 
-  ArrowRight,
-  ShieldCheck,
-  Zap,
-  Activity,
-  History,
-  AlertCircle
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Plus, RefreshCcw, CheckCircle2, ArrowRight,
+  ShieldCheck, Zap, Activity, History, AlertCircle, X, Wifi, WifiOff, Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, signIn, signOut, db } from './lib/firebase';
-import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, query, where, orderBy, onSnapshot, limit } from 'firebase/firestore';
-import { Payment } from './types';
+import { Payment, SystemStats, WebhookLogEntry } from './types';
+
+const DEMO_USER = 'demo_user_001';
+const POLL_MS = 2000;
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loggedIn, setLoggedIn] = useState(false);
+  const [username, setUsername] = useState('');
   const [payments, setPayments] = useState<Payment[]>([]);
+  const [stats, setStats] = useState<SystemStats | null>(null);
+  const [webhooks, setWebhooks] = useState<WebhookLogEntry[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [amount, setAmount] = useState('100.00');
+  const [amount, setAmount] = useState('100');
   const [submitting, setSubmitting] = useState(false);
+  const [selectedPayment, setSelectedPayment] = useState<Payment | null>(null);
+  const [activeTab, setActiveTab] = useState<'payments' | 'webhooks'>('payments');
+
+  const userId = DEMO_USER;
+
+  // ---------- Polling ----------
+  const fetchData = useCallback(async () => {
+    if (!loggedIn) return;
+    try {
+      const [pRes, sRes, wRes] = await Promise.all([
+        fetch(`/api/payments?userId=${userId}`),
+        fetch('/api/system/stats'),
+        fetch('/api/webhooks'),
+      ]);
+      if (pRes.ok) setPayments(await pRes.json());
+      if (sRes.ok) setStats(await sRes.json());
+      if (wRes.ok) setWebhooks(await wRes.json());
+    } catch { /* server may be starting */ }
+  }, [loggedIn, userId]);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
-  }, []);
+    if (!loggedIn) return;
+    fetchData();
+    const id = setInterval(fetchData, POLL_MS);
+    return () => clearInterval(id);
+  }, [loggedIn, fetchData]);
 
+  // Keep detail panel synced
   useEffect(() => {
-    if (!user) {
-      setPayments([]);
+    if (!selectedPayment) return;
+    const updated = payments.find(p => (p._id || p.id) === (selectedPayment._id || selectedPayment.id));
+    if (updated) setSelectedPayment(updated);
+  }, [payments]);
+
+  // ---------- Razorpay Payment Flow ----------
+  const handleCreatePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!window.Razorpay) {
+      alert('Razorpay SDK not loaded. Please check your internet connection.');
       return;
     }
 
-    const q = query(
-      collection(db, 'payments'),
-      where('userId', '==', user.uid),
-      orderBy('createdAt', 'desc'),
-      limit(50)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const p = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Payment));
-      setPayments(p);
-    }, (error) => {
-      console.error("Firestore Error:", error);
-    });
-
-    return unsubscribe;
-  }, [user]);
-
-  const handleCreatePayment = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) return;
-
     setSubmitting(true);
     try {
-      const response = await fetch('/api/payments', {
+      // 1. Create order on backend
+      const res = await fetch('/api/payments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           amount: parseFloat(amount),
-          currency: 'USD',
-          userId: user.uid,
-          idempotencyKey: `pay_${Date.now()}_${Math.random().toString(36).substring(7)}`,
-          metadata: { device: 'web_dashboard' }
-        })
+          currency: 'INR',
+          userId,
+          idempotencyKey: `pay_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          metadata: { device: 'web_dashboard', initiatedBy: username },
+        }),
       });
 
-      if (!response.ok) throw new Error('API Request Failed');
-      
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || 'Failed to create order');
+      }
+
+      const data = await res.json();
+      const { payment, razorpayKeyId, razorpayOrderId } = data;
+
       setIsModalOpen(false);
-    } catch (error) {
-      console.error("Payment initiation failed:", error);
-      alert("Failed to initiate payment");
+
+      // 2. Open Razorpay Checkout
+      const options = {
+        key: razorpayKeyId,
+        amount: Math.round(parseFloat(amount) * 100),
+        currency: 'INR',
+        name: 'NexusPay',
+        description: `Payment #${(payment._id || payment.id).slice(0, 8)}`,
+        order_id: razorpayOrderId,
+        handler: async (response: any) => {
+          // 3. Verify payment on backend
+          try {
+            await fetch('/api/payments/verify', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                paymentId: payment._id || payment.id,
+              }),
+            });
+            fetchData();
+          } catch (err) {
+            console.error('Verification failed:', err);
+          }
+        },
+        prefill: {
+          name: username,
+          email: `${username.toLowerCase().replace(/\s/g, '')}@demo.com`,
+        },
+        theme: { color: '#6c5ce7' },
+        modal: {
+          ondismiss: async () => {
+            // User closed checkout without paying
+            try {
+              await fetch(`/api/payments/${payment._id || payment.id}/fail`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'USER_DISMISSED_CHECKOUT' }),
+              });
+              fetchData();
+            } catch (err) {
+              console.error('Failed to mark payment as failed:', err);
+            }
+          },
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', async (response: any) => {
+        try {
+          await fetch(`/api/payments/${payment._id || payment.id}/fail`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              reason: response.error?.description || 'PAYMENT_FAILED',
+            }),
+          });
+          fetchData();
+        } catch (err) {
+          console.error('Failed to record failure:', err);
+        }
+      });
+      rzp.open();
+    } catch (error: any) {
+      alert(`Error: ${error.message}`);
     } finally {
       setSubmitting(false);
     }
   };
 
-  if (loading) return (
-    <div className="min-h-screen flex items-center justify-center font-mono">
-      <Zap className="animate-spin mr-2" size={16} />
-      LOADING_SYSTEM_RESOURCES...
-    </div>
-  );
-
-  if (!user) return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-[#E4E3E0]">
-      <div className="max-w-md w-full border border-black p-8 bg-white shadow-[8px_8px_0px_#141414]">
-        <div className="flex items-center mb-8 gap-2">
-          <ShieldCheck size={32} />
-          <h1 className="text-2xl font-bold tracking-tighter">NEXUS_PAY_v1.0</h1>
-        </div>
-        <p className="font-mono text-sm mb-8 opacity-70">
-          SECURE_GATEWAY_ACCESS_REQUIRED. PLEASE_AUTHENTICATE_TO_CONTINUE.
-        </p>
-        <button 
-          onClick={signIn}
-          className="w-full bg-black text-white p-4 font-mono hover:bg-zinc-800 transition-colors flex items-center justify-center gap-2"
-        >
-          AUTH_VIA_GOOGLE <ArrowRight size={16} />
-        </button>
+  // ---------- Login ----------
+  if (!loggedIn) {
+    return (
+      <div className="login-page">
+        <motion.div className="login-card" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+          <ShieldCheck size={36} style={{ color: 'var(--accent)', marginBottom: '1rem' }} />
+          <h1>NexusPay v1.0</h1>
+          <p>Payment Processing System — Razorpay Integrated</p>
+          <input className="form-input login-input" placeholder="Enter your name..."
+            value={username} onChange={e => setUsername(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && username.trim()) setLoggedIn(true); }} />
+          <button className="btn-login" onClick={() => { if (username.trim()) setLoggedIn(true); }}>
+            Access Dashboard <ArrowRight size={14} />
+          </button>
+        </motion.div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  // ---------- Dashboard ----------
+  const paymentId = (p: Payment) => p._id || p.id;
 
   return (
-    <div className="min-h-screen p-4 md:p-8 font-sans">
-      {/* Header */}
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-end mb-12 gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <Zap size={20} className="text-black" />
-            <span className="font-mono text-xs uppercase tracking-widest opacity-50">Authorized Terminal</span>
-          </div>
-          <h1 className="text-4xl font-bold tracking-tighter uppercase italic font-serif">Nexus Dashboard</h1>
+    <div className="app">
+      <header className="header">
+        <div className="header-left">
+          <div className="header-brand"><Zap size={20} /><span className="header-tag">Authorized Terminal</span></div>
+          <h1 className="header-title">NexusPay Dashboard</h1>
         </div>
-        
-        <div className="flex items-center gap-4 font-mono text-xs">
-          <div className="flex flex-col items-end">
-            <span className="opacity-50 uppercase">User</span>
-            <span>{user.email}</span>
-          </div>
-          <button 
-            onClick={signOut}
-            className="border border-black px-3 py-1 hover:bg-black hover:text-white transition-all uppercase"
-          >
-            Logout
-          </button>
+        <div className="header-right">
+          <div className="header-user"><div style={{ color: 'var(--text-dim)' }}>User</div><div>{username}</div></div>
+          <button className="btn-logout" onClick={() => setLoggedIn(false)}>Logout</button>
         </div>
       </header>
 
-      {/* Grid Summary */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-12">
-        <StatCard label="Total Vol" value={`$${payments.filter(p => p.status === 'SUCCESS').reduce((acc, p) => acc + p.amount, 0).toFixed(2)}`} icon={<Activity size={14}/>} />
-        <StatCard label="Active" value={payments.filter(p => p.status === 'PROCESSING').length.toString()} icon={<RefreshCcw size={14} className="animate-spin"/>} />
-        <StatCard label="Success" value={payments.filter(p => p.status === 'SUCCESS').length.toString()} icon={<CheckCircle2 size={14}/>} />
-        <StatCard label="Retries" value={payments.reduce((acc, p) => acc + (p.retryCount || 0), 0).toString()} icon={<History size={14}/>} />
-      </div>
-
-      {/* Main Table Container */}
-      <div className="bg-white technical-grid shadow-[4px_4px_0px_#141414]">
-        <div className="p-4 border-bottom border-black flex justify-between items-center">
-          <h2 className="font-serif italic text-lg">Transaction Stream</h2>
-          <button 
-            onClick={() => setIsModalOpen(true)}
-            className="bg-black text-white px-4 py-2 text-xs font-mono flex items-center gap-2 hover:bg-zinc-800 transition-colors"
-          >
-            <Plus size={14} /> INITIATE_PAYMENT
-          </button>
-        </div>
-
-        {/* Table Headers */}
-        <div className="grid grid-cols-4 md:grid-cols-6 p-4 border-b border-black font-serif italic text-[11px] uppercase opacity-50 tracking-widest bg-zinc-100">
-          <div className="col-span-1">ID / Time</div>
-          <div className="hidden md:block">Key</div>
-          <div>Amount / Curr</div>
-          <div>Status</div>
-          <div className="hidden md:block">Reference</div>
-          <div className="text-right">Actions</div>
-        </div>
-
-        {/* Table Body */}
-        <div className="min-h-[400px]">
-          {payments.length === 0 ? (
-            <div className="h-full flex items-center justify-center p-20 font-mono text-sm opacity-30 italic">
-              NO_TRANSACTION_HISTORY_FOUND
-            </div>
-          ) : (
-            payments.map((p) => (
-              <motion.div 
-                layout
-                key={p.id}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="grid grid-cols-4 md:grid-cols-6 p-4 technical-row items-center"
-              >
-                <div className="flex flex-col gap-1">
-                  <span className="font-mono text-xs font-bold leading-none">{p.id.slice(0, 8)}...</span>
-                  <span className="font-mono text-[10px] opacity-50">
-                    {p.createdAt?.toDate ? p.createdAt.toDate().toLocaleTimeString() : 'PENDING...'}
-                  </span>
-                </div>
-                
-                <div className="hidden md:block font-mono text-[10px] truncate pr-4 opacity-50">
-                  {p.idempotencyKey}
-                </div>
-
-                <div className="font-mono text-xs">
-                  {p.amount.toFixed(2)} <span className="opacity-50">{p.currency}</span>
-                </div>
-
-                <div>
-                   <StatusBadge status={p.status} retryCount={p.retryCount} />
-                </div>
-
-                <div className="hidden md:block font-mono text-[10px] truncate pr-4 italic">
-                  {p.gatewayReference || '—'}
-                </div>
-
-                <div className="text-right">
-                  <button className="opacity-30 hover:opacity-100 transition-opacity">
-                    <ArrowRight size={14} />
-                  </button>
-                </div>
-              </motion.div>
-            ))
+      {/* Stats */}
+      <div className="stats-grid">
+        <StatCard label="Total Volume" value={`₹${(stats?.totalVolume ?? 0).toFixed(2)}`} icon={<Activity size={14} />} />
+        <StatCard label="Processing" value={String(stats?.byStatus.PROCESSING ?? 0)} icon={<RefreshCcw size={14} className="spinner" />} />
+        <StatCard label="Success" value={String(stats?.byStatus.SUCCESS ?? 0)} icon={<CheckCircle2 size={14} />} />
+        <StatCard label="Total Retries" value={String(stats?.totalRetries ?? 0)} icon={<History size={14} />} />
+        <StatCard label="Webhooks" value={String(stats?.webhooksReceived ?? 0)} icon={<Wifi size={14} />} />
+        <div className="stat-card">
+          <div className="stat-header"><ShieldCheck size={14} style={{ color: 'var(--text-muted)' }} /><span className="stat-label">Circuit Breaker</span></div>
+          {stats?.circuitBreaker && (
+            <span className={`cb-badge ${stats.circuitBreaker.state.toLowerCase().replace('_', '-')}`}>
+              <span className="cb-dot" />{stats.circuitBreaker.state}
+            </span>
           )}
         </div>
       </div>
 
-      {/* Footer Info */}
-      <footer className="mt-12 flex justify-between font-mono text-[10px] opacity-40 uppercase tracking-widest border-t border-black pt-4">
-        <div>Resilient Payment Processor v1.0.42</div>
-        <div className="flex gap-4">
-          <span>Latency: 142ms</span>
-          <span>Status: Operational</span>
+      {/* Tabs */}
+      <div className="tabs">
+        <button className={`tab ${activeTab === 'payments' ? 'active' : ''}`} onClick={() => setActiveTab('payments')}>Transactions</button>
+        <button className={`tab ${activeTab === 'webhooks' ? 'active' : ''}`} onClick={() => setActiveTab('webhooks')}>Webhook Logs</button>
+      </div>
+
+      {activeTab === 'payments' ? (
+        <div className="table-container">
+          <div className="table-header">
+            <h2 className="table-title">Transaction Stream</h2>
+            <button className="btn-primary" onClick={() => setIsModalOpen(true)}><Plus size={14} /> New Payment</button>
+          </div>
+          <div className="table-cols">
+            <div>ID / Time</div><div>Razorpay Order</div><div>Amount</div><div>Status</div><div>Payment ID</div><div></div>
+          </div>
+          <div style={{ minHeight: '300px' }}>
+            {payments.length === 0 ? (
+              <div className="table-empty"><WifiOff size={24} /><span>No transactions yet</span></div>
+            ) : (
+              <AnimatePresence>
+                {payments.map(p => (
+                  <motion.div key={paymentId(p)} className="table-row" initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}
+                    onClick={() => setSelectedPayment(p)}>
+                    <div>
+                      <div className="cell-id">{paymentId(p).slice(0, 8)}...</div>
+                      <div className="cell-time">{new Date(p.createdAt).toLocaleTimeString()}</div>
+                    </div>
+                    <div className="cell-key">{p.razorpayOrderId || '—'}</div>
+                    <div><span className="cell-amount">₹{p.amount.toFixed(2)}</span><span className="cell-currency">{p.currency}</span></div>
+                    <div><StatusBadge status={p.status} retryCount={p.retryCount} /></div>
+                    <div className="cell-ref">{p.razorpayPaymentId || '—'}</div>
+                    <div className="cell-action"><button><ArrowRight size={14} /></button></div>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="table-container">
+          <div className="table-header"><h2 className="table-title">Webhook Activity Log</h2></div>
+          <div className="wh-cols"><div>Payment ID</div><div>Event</div><div>Result</div><div>Received</div></div>
+          <div style={{ minHeight: '200px' }}>
+            {webhooks.length === 0 ? (
+              <div className="table-empty"><span>No webhook events yet</span></div>
+            ) : webhooks.map(w => (
+              <div key={w._id} className="wh-row">
+                <div className="cell-id">{w.paymentId.slice(0, 8)}...</div>
+                <div className="cell-key">{w.eventType}</div>
+                <div>
+                  <span className={`status-badge ${w.result === 'PROCESSED' ? 'success' : w.result === 'IGNORED' ? 'pending' : 'failed'}`}>
+                    {w.result}
+                  </span>
+                </div>
+                <div className="cell-time">{new Date(w.createdAt).toLocaleTimeString()}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <footer className="footer">
+        <div>NexusPay — Razorpay Integrated v1.0</div>
+        <div style={{ display: 'flex', gap: '1.5rem' }}>
+          <span>Active: {stats?.activeProcessing ?? 0}</span>
+          <span>Payments: {stats?.totalPayments ?? 0}</span>
         </div>
       </footer>
 
-      {/* New Payment Modal */}
+      {/* Payment Modal */}
       <AnimatePresence>
         {isModalOpen && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-[#E4E3E0] border-2 border-black max-w-sm w-full p-8 shadow-[12px_12px_0px_#141414]"
-            >
-              <div className="flex justify-between items-start mb-8">
-                <h3 className="font-serif italic text-2xl uppercase tracking-tighter">New Payment</h3>
-                <button onClick={() => setIsModalOpen(false)}><ArrowRight className="rotate-180" size={18}/></button>
+          <div className="modal-overlay" onClick={() => setIsModalOpen(false)}>
+            <motion.div className="modal" initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.92, opacity: 0 }} onClick={e => e.stopPropagation()}>
+              <div className="modal-title-row">
+                <h3 className="modal-title">Initiate Payment</h3>
+                <button className="btn-close" onClick={() => setIsModalOpen(false)}><X size={18} /></button>
               </div>
-
               <form onSubmit={handleCreatePayment}>
-                <div className="mb-6">
-                  <label className="font-mono text-[10px] uppercase opacity-50 block mb-2">Amount (USD)</label>
-                  <input 
-                    type="number" 
-                    step="0.01"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    className="w-full bg-white border border-black p-4 font-mono text-xl focus:outline-none focus:ring-2 ring-black"
-                    autoFocus
-                  />
+                <div className="form-group">
+                  <label className="form-label">Amount (INR)</label>
+                  <input type="number" step="1" min="1" value={amount}
+                    onChange={e => setAmount(e.target.value)} className="form-input" autoFocus />
                 </div>
-
-                <div className="bg-zinc-200 p-4 border border-black/10 mb-8">
-                  <div className="flex gap-2 items-center font-mono text-[10px] uppercase opacity-70 mb-2">
-                    <AlertCircle size={12}/> System_Directive
-                  </div>
-                  <p className="font-mono text-[10px] opacity-50">
-                    This transaction will simulate random network conditions including timeouts, transient failures, and asynchronous gateway callbacks.
-                  </p>
+                <div className="info-box">
+                  <div className="info-box-title"><AlertCircle size={12} /> Razorpay Test Mode</div>
+                  <p>This uses Razorpay's test environment. Use test card <strong>4111 1111 1111 1111</strong>, any future expiry, and any CVV to simulate a successful payment.</p>
                 </div>
-
-                <button 
-                  disabled={submitting}
-                  type="submit"
-                  className="w-full bg-black text-white p-4 font-mono hover:bg-zinc-800 disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {submitting ? 'EXECUTING_TX...' : 'CONFIRM_TRANSACTION'}
+                <button type="submit" className="btn-submit" disabled={submitting}>
+                  {submitting ? <><Loader2 size={14} className="spinner" /> Creating Order...</> : 'Pay with Razorpay'}
                 </button>
               </form>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      {/* Detail Panel */}
+      <AnimatePresence>
+        {selectedPayment && (
+          <>
+            <div className="detail-overlay" onClick={() => setSelectedPayment(null)} />
+            <motion.div className="detail-panel" initial={{ x: 480 }} animate={{ x: 0 }} exit={{ x: 480 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}>
+              <div className="modal-title-row">
+                <h3 className="modal-title">Payment Detail</h3>
+                <button className="btn-close" onClick={() => setSelectedPayment(null)}><X size={18} /></button>
+              </div>
+              <div className="detail-section">
+                <div className="detail-section-title">Overview</div>
+                <DetailRow label="ID" value={paymentId(selectedPayment)} />
+                <DetailRow label="Amount" value={`₹${selectedPayment.amount.toFixed(2)} ${selectedPayment.currency}`} />
+                <div className="detail-field"><span className="detail-field-label">Status</span><span><StatusBadge status={selectedPayment.status} retryCount={selectedPayment.retryCount} /></span></div>
+                <DetailRow label="Retries" value={`${selectedPayment.retryCount} / ${selectedPayment.maxRetries}`} />
+                <DetailRow label="Razorpay Order" value={selectedPayment.razorpayOrderId || '—'} />
+                <DetailRow label="Razorpay Payment" value={selectedPayment.razorpayPaymentId || '—'} />
+                <DetailRow label="Idemp. Key" value={selectedPayment.idempotencyKey} />
+                {selectedPayment.lastError && <DetailRow label="Last Error" value={selectedPayment.lastError} color="var(--danger)" />}
+                <DetailRow label="Created" value={new Date(selectedPayment.createdAt).toLocaleString()} />
+                <DetailRow label="Updated" value={new Date(selectedPayment.updatedAt).toLocaleString()} />
+              </div>
+              <div className="detail-section">
+                <div className="detail-section-title">Event Timeline ({selectedPayment.logs.length})</div>
+                {selectedPayment.logs.map((log, i) => (
+                  <div key={i} className="log-entry">
+                    <div className="log-time">{new Date(log.timestamp).toLocaleTimeString()}</div>
+                    <div>
+                      <div className="log-event">{log.event}</div>
+                      {log.details && <div className="log-details">{log.details}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
-function StatCard({ label, value, icon }: { label: string, value: string, icon: React.ReactNode }) {
+function StatCard({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
   return (
-    <div className="bg-white border border-black p-4 shadow-[2px_2px_0px_#141414]">
-      <div className="flex items-center gap-2 mb-2 opacity-50">
-        {icon}
-        <span className="font-mono text-[10px] uppercase tracking-widest">{label}</span>
-      </div>
-      <div className="text-2xl font-mono font-bold">{value}</div>
+    <div className="stat-card">
+      <div className="stat-header">{icon}<span className="stat-label">{label}</span></div>
+      <div className="stat-value">{value}</div>
     </div>
   );
 }
 
-function StatusBadge({ status, retryCount }: { status: Payment['status'], retryCount: number }) {
-  const styles = {
-    PROCESSING: "text-blue-500 border-blue-500",
-    SUCCESS: "text-emerald-600 border-emerald-600",
-    FAILED: "text-rose-600 border-rose-600",
-    PENDING: "text-amber-500 border-amber-500"
-  };
-
+function DetailRow({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
-    <div className="flex items-center gap-2">
-      <span className={`status-badge min-w-[80px] text-center ${styles[status]}`}>
+    <div className="detail-field">
+      <span className="detail-field-label">{label}</span>
+      <span className="detail-field-value" style={color ? { color } : undefined}>{value}</span>
+    </div>
+  );
+}
+
+function StatusBadge({ status, retryCount }: { status: string; retryCount: number }) {
+  const cls = status === 'PROCESSING' ? 'processing' : status === 'SUCCESS' ? 'success' : status === 'FAILED' ? 'failed' : 'pending';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}>
+      <span className={`status-badge ${cls}`}>
         {status}
-        {status === 'PROCESSING' && <span className="ml-1 inline-block w-1 h-1 bg-current rounded-full pulse" />}
+        {status === 'PROCESSING' && <span className="pulse-dot" />}
       </span>
-      {retryCount > 0 && status !== 'SUCCESS' && (
-        <span className="font-mono text-[9px] opacity-50">Attempt {retryCount + 1}</span>
-      )}
-    </div>
+      {retryCount > 0 && status !== 'SUCCESS' && <span className="retry-count">×{retryCount}</span>}
+    </span>
   );
 }

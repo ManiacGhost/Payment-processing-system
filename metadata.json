@@ -1,6 +1,0 @@
-{
-  "name": "NexusPay",
-  "description": "A high-fidelity payment processing system demonstrating idempotency, concurrency control, and resilient retry logic with a real-time dashboard.",
-  "requestFramePermissions": [],
-  "majorCapabilities": []
-}

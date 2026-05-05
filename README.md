@@ -1,20 +1,59 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# NexusPay — Payment Processing System
 
-# Run and deploy your AI Studio app
+A full-stack payment processing simulator demonstrating real-world backend patterns including retry logic, idempotency, concurrency control, circuit breakers, rate limiting, and webhook handling.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/24d23c31-4070-4dfa-b2f3-068987341c1d
+| Feature | Implementation |
+|---|---|
+| **Payment Lifecycle** | PENDING → PROCESSING → SUCCESS / FAILED with full event logging |
+| **Retry with Exponential Backoff** | Configurable max retries (default: 3) with `2^n × 1000ms` backoff |
+| **Idempotency** | Duplicate requests with the same key return the existing payment |
+| **Concurrency Control** | Lock-based prevention of parallel processing on the same payment |
+| **Gateway Simulation** | Random outcomes: success (50%), async/pending (25%), transient error (10%), hard failure (8%), timeout (7%) |
+| **Webhook Handling** | Async callbacks with duplicate/conflict detection and terminal-state guards |
+| **Circuit Breaker** | Opens after 5 consecutive gateway failures, auto-recovers after 15s |
+| **Rate Limiting** | 10 requests per user per minute |
+| **Observability** | Per-payment event timeline, system stats, webhook audit log |
 
-## Run Locally
+## Quick Start
 
-**Prerequisites:**  Node.js
+```bash
+npm install
+npm run dev          # Starts the API server (port 3001)
+npx vite --host      # Starts the frontend dev server (port 5173)
+```
 
+Open **http://localhost:5173** in your browser.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Architecture
+
+```
+┌──────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   React UI   │───▶│  Express API     │───▶│  Gateway Sim    │
+│  (Vite 5173) │    │  (Port 3001)     │    │  (Random Output)│
+│              │◀───│                  │◀───│                 │
+└──────────────┘    │  • Idempotency   │    └────────┬────────┘
+                    │  • Rate Limiter  │             │
+                    │  • Circuit Break │    ┌────────▼────────┐
+                    │  • Retry Engine  │◀───│  Webhook Sim    │
+                    │  • Conc. Locks   │    │  (Async Callback│
+                    └──────────────────┘    └─────────────────┘
+```
+
+## Tech Stack
+
+- **Frontend**: React 19, Vite, Motion (Framer Motion), Lucide Icons, Vanilla CSS
+- **Backend**: Express.js, TypeScript, In-Memory Store
+- **Dev Tools**: tsx, Vite proxy
+
+## API Endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/payments` | Create a new payment |
+| `GET` | `/api/payments?userId=X` | List payments for a user |
+| `GET` | `/api/payments/:id` | Get payment detail with logs |
+| `POST` | `/api/webhooks/gateway` | Webhook callback endpoint |
+| `GET` | `/api/webhooks` | List webhook audit logs |
+| `GET` | `/api/system/stats` | System-wide statistics |
