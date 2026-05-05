@@ -1,59 +1,89 @@
 # NexusPay — Payment Processing System
 
-A full-stack payment processing simulator demonstrating real-world backend patterns including retry logic, idempotency, concurrency control, circuit breakers, rate limiting, and webhook handling.
+A full-stack payment processor with **Razorpay** integration, **JWT authentication**, **MongoDB** persistence, and resilience patterns (retry, circuit breaker, rate limiting).
 
-## Features
+## Project Structure
 
-| Feature | Implementation |
-|---|---|
-| **Payment Lifecycle** | PENDING → PROCESSING → SUCCESS / FAILED with full event logging |
-| **Retry with Exponential Backoff** | Configurable max retries (default: 3) with `2^n × 1000ms` backoff |
-| **Idempotency** | Duplicate requests with the same key return the existing payment |
-| **Concurrency Control** | Lock-based prevention of parallel processing on the same payment |
-| **Gateway Simulation** | Random outcomes: success (50%), async/pending (25%), transient error (10%), hard failure (8%), timeout (7%) |
-| **Webhook Handling** | Async callbacks with duplicate/conflict detection and terminal-state guards |
-| **Circuit Breaker** | Opens after 5 consecutive gateway failures, auto-recovers after 15s |
-| **Rate Limiting** | 10 requests per user per minute |
-| **Observability** | Per-payment event timeline, system stats, webhook audit log |
+```
+├── server/           # Express API (port 3001)
+│   ├── src/
+│   │   ├── index.ts          # Entry — DB connect, route mount
+│   │   ├── middleware/
+│   │   │   └── auth.ts       # JWT verification middleware
+│   │   ├── models/
+│   │   │   ├── User.ts       # User model (bcrypt hashed passwords)
+│   │   │   ├── Payment.ts    # Payment model (Razorpay fields)
+│   │   │   └── WebhookLog.ts # Webhook audit log
+│   │   └── routes/
+│   │       ├── auth.ts       # Register, Login, Refresh, Logout
+│   │       ├── payments.ts   # CRUD + Razorpay order/verify
+│   │       └── webhooks.ts   # Webhook handler + system stats
+│   ├── .env
+│   └── package.json
+│
+├── client/           # React + Vite (port 5173)
+│   ├── src/
+│   │   ├── App.tsx           # Auth flow + Dashboard UI
+│   │   ├── api.ts            # Fetch wrapper with JWT auto-refresh
+│   │   ├── types.ts
+│   │   └── index.css
+│   └── package.json
+│
+└── README.md
+```
 
 ## Quick Start
 
 ```bash
+# Terminal 1 — Backend
+cd server
 npm install
-npm run dev          # Starts the API server (port 3001)
-npx vite --host      # Starts the frontend dev server (port 5173)
+npm run dev
+
+# Terminal 2 — Frontend
+cd client
+npm install
+npm run dev
 ```
 
-Open **http://localhost:5173** in your browser.
+## Features
 
-## Architecture
-
-```
-┌──────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   React UI   │───▶│  Express API     │───▶│  Gateway Sim    │
-│  (Vite 5173) │    │  (Port 3001)     │    │  (Random Output)│
-│              │◀───│                  │◀───│                 │
-└──────────────┘    │  • Idempotency   │    └────────┬────────┘
-                    │  • Rate Limiter  │             │
-                    │  • Circuit Break │    ┌────────▼────────┐
-                    │  • Retry Engine  │◀───│  Webhook Sim    │
-                    │  • Conc. Locks   │    │  (Async Callback│
-                    └──────────────────┘    └─────────────────┘
-```
-
-## Tech Stack
-
-- **Frontend**: React 19, Vite, Motion (Framer Motion), Lucide Icons, Vanilla CSS
-- **Backend**: Express.js, TypeScript, In-Memory Store
-- **Dev Tools**: tsx, Vite proxy
+| Feature | Details |
+|---|---|
+| **JWT Auth** | Access token (1hr) + refresh token (7d) with rotation |
+| **Razorpay** | Real order creation, checkout, signature verification |
+| **MongoDB** | Persistent storage — survives restarts |
+| **Retry + Backoff** | Exponential backoff on Razorpay API failures |
+| **Circuit Breaker** | Opens after 5 failures, auto-recovers in 15s |
+| **Idempotency** | Unique key prevents duplicate payments |
+| **Concurrency** | Lock-based parallel processing prevention |
+| **Rate Limiting** | 10 requests/user/minute |
+| **Webhooks** | Razorpay webhook with signature verification, duplicate/conflict detection |
+| **Observability** | Per-payment event timeline, system stats, webhook audit log |
 
 ## API Endpoints
 
+### Auth (Public)
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/payments` | Create a new payment |
-| `GET` | `/api/payments?userId=X` | List payments for a user |
-| `GET` | `/api/payments/:id` | Get payment detail with logs |
-| `POST` | `/api/webhooks/gateway` | Webhook callback endpoint |
-| `GET` | `/api/webhooks` | List webhook audit logs |
-| `GET` | `/api/system/stats` | System-wide statistics |
+| POST | `/api/auth/register` | Create account |
+| POST | `/api/auth/login` | Login, returns JWT tokens |
+| POST | `/api/auth/refresh` | Rotate access + refresh tokens |
+| POST | `/api/auth/logout` | Invalidate refresh token |
+| GET | `/api/auth/me` | Get current user (protected) |
+
+### Payments (Protected — requires Bearer token)
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/payments` | Create Razorpay order |
+| POST | `/api/payments/verify` | Verify payment signature |
+| POST | `/api/payments/:id/fail` | Mark payment as failed |
+| GET | `/api/payments` | List user's payments |
+| GET | `/api/payments/:id` | Payment detail with logs |
+
+### System (Public)
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/webhooks/razorpay` | Razorpay webhook endpoint |
+| GET | `/api/webhooks` | Webhook audit logs |
+| GET | `/api/webhooks/stats` | System statistics |

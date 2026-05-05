@@ -144,6 +144,17 @@ body {
 .login-input { width: 100%; margin-bottom: 1rem; }
 .btn-login { width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem; background: var(--accent); color: #fff; border: none; font-family: var(--mono); font-size: 0.8rem; font-weight: 600; padding: 0.85rem; border-radius: var(--radius-sm); cursor: pointer; transition: all 0.2s; }
 .btn-login:hover { filter: brightness(1.15); }
+.btn-login:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Auth Tabs */
+.auth-tabs { display: flex; margin-bottom: 1.5rem; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.auth-tab { flex: 1; display: flex; align-items: center; justify-content: center; gap: 0.4rem; padding: 0.6rem; background: none; border: none; color: var(--text-muted); font-family: var(--mono); font-size: 0.7rem; cursor: pointer; transition: all 0.2s; }
+.auth-tab.active { background: var(--accent); color: #fff; }
+.auth-tab:not(.active):hover { background: var(--bg-surface); }
+.auth-error { background: var(--danger-bg); color: var(--danger); font-family: var(--mono); font-size: 0.7rem; padding: 0.6rem 1rem; border-radius: var(--radius-sm); margin-bottom: 1rem; text-align: center; }
+.login-card .form-group { text-align: left; }
+.login-card .form-input { font-size: 0.85rem; }
+.login-card .form-label { display: flex; align-items: center; gap: 0.3rem; }
 
 /* Tabs */
 .tabs { display: flex; gap: 0; margin-bottom: 2rem; border-bottom: 1px solid var(--border); }
