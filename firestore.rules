@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Payment Rules ---
+    match /payments/{paymentId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      
+      // Usually created by backend, but if client initiates:
+      allow create: if isSignedIn() 
+        && isValidId(paymentId)
+        && isValidPayment(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().status == "PENDING"
+        && incoming().retryCount == 0;
+
+      allow update: if isSignedIn()
+        && existing().userId == request.auth.uid
+        && incoming().userId == existing().userId
+        && incoming().idempotencyKey == existing().idempotencyKey
+        && (
+          // Client might cancel if still pending
+          (existing().status == "PENDING" && incoming().status == "FAILED" && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'lastError']))
+        );
+    }
+
+    function isValidPayment(data) {
+      return data.keys().hasAll(['userId', 'amount', 'currency', 'status', 'idempotencyKey', 'createdAt', 'updatedAt', 'retryCount'])
+        && data.keys().size() >= 8
+        && data.userId is string
+        && data.amount is number && data.amount > 0
+        && data.currency is string && data.currency.size() == 3
+        && data.status in ["PENDING", "PROCESSING", "SUCCESS", "FAILED"]
+        && data.idempotencyKey is string && data.idempotencyKey.size() <= 64
+        && data.retryCount is int
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- Webhook Log Rules ---
+    match /webhook_logs/{logId} {
+      // System only, client cannot read or write webhooks
+      allow read, write: if false;
+    }
+  }
+}

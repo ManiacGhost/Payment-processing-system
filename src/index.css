@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+@theme {
+  --font-mono: 'Courier New', Courier, monospace;
+  --font-serif: 'Georgia', serif;
+}
+
+:root {
+  --bg: #E4E3E0;
+  --ink: #141414;
+  --line: #141414;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--ink);
+}
+
+.technical-grid {
+  border: 1px solid var(--line);
+}
+
+.technical-row {
+  border-bottom: 1px solid var(--line);
+  transition: all 0.2s ease;
+}
+
+.technical-row:hover {
+  background: var(--ink);
+  color: var(--bg);
+}
+
+.status-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.pulse {
+  animation: pulse-dot 1.5s infinite;
+}
