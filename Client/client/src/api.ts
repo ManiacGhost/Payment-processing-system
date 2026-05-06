@@ -1,5 +1,7 @@
 // API client with JWT token management and auto-refresh
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
+
 const TOKEN_KEY = 'nexuspay_access_token';
 const REFRESH_KEY = 'nexuspay_refresh_token';
 const USER_KEY = 'nexuspay_user';
@@ -29,7 +31,7 @@ async function refreshAccessToken(): Promise<string | null> {
   if (!rt) return null;
 
   try {
-    const res = await fetch('/api/auth/refresh', {
+    const res = await fetch(`${API_BASE_URL}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: rt }),
@@ -57,14 +59,16 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  let res = await fetch(url, { ...options, headers });
+  // Prepend API_BASE_URL if url starts with /api
+  const fullUrl = url.startsWith('/api') ? `${API_BASE_URL}${url.slice(4)}` : url;
+  let res = await fetch(fullUrl, { ...options, headers });
 
   // If 401, try refreshing
   if (res.status === 401) {
     const newToken = await refreshAccessToken();
     if (newToken) {
       headers['Authorization'] = `Bearer ${newToken}`;
-      res = await fetch(url, { ...options, headers });
+      res = await fetch(fullUrl, { ...options, headers });
     }
   }
 
@@ -73,7 +77,7 @@ export async function apiFetch(url: string, options: RequestInit = {}): Promise<
 
 // Auth API calls
 export async function apiRegister(name: string, email: string, password: string) {
-  const res = await fetch('/api/auth/register', {
+  const res = await fetch(`${API_BASE_URL}/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, email, password }),
@@ -85,7 +89,7 @@ export async function apiRegister(name: string, email: string, password: string)
 }
 
 export async function apiLogin(email: string, password: string) {
-  const res = await fetch('/api/auth/login', {
+  const res = await fetch(`${API_BASE_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
@@ -99,7 +103,7 @@ export async function apiLogin(email: string, password: string) {
 export async function apiLogout() {
   const rt = getRefreshToken();
   if (rt) {
-    await fetch('/api/auth/logout', {
+    await fetch(`${API_BASE_URL}/auth/logout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refreshToken: rt }),

@@ -41,4 +41,22 @@ export interface WebhookLogEntry {
 
 export interface AuthUser { id: string; name: string; email: string; }
 
+export interface QueueJob {
+  id: string;
+  paymentId: string;
+  attempt: number;
+  maxAttempts: number;
+  status: 'pending' | 'running' | 'success' | 'failed';
+  nextRunAt?: number;
+  lastError?: string;
+  createdAt: number;
+}
+
+export interface QueueStats {
+  queueLength: number;
+  pending?: number;
+  history: QueueJob[];
+  jobs?: QueueJob[];
+}
+
 declare global { interface Window { Razorpay: any; } }

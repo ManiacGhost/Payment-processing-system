@@ -8,34 +8,68 @@ import mongoose from 'mongoose';
 import authRoutes from './routes/auth.js';
 import paymentRoutes from './routes/payments.js';
 import webhookRoutes from './routes/webhooks.js';
+import simulateRoutes from './routes/simulate.js';
 
 async function main() {
-  const MONGODB_URI = process.env.MONGODB_URI;
-  if (!MONGODB_URI) throw new Error('MONGODB_URI not set');
-
-  await mongoose.connect(MONGODB_URI);
-  console.log('[MongoDB] Connected');
-
   const app = express();
-  const PORT = parseInt(process.env.PORT || '3001');
+  const PORT = parseInt(process.env.PORT || '3001', 10);
 
-  app.use(cors({ origin: true, credentials: true }));
+  // Start listening immediately (don't wait for DB to fail startup)
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n══════════════════════════════════════════`);
+    console.log(`  NexusPay API — port ${PORT}`);
+    console.log(`══════════════════════════════════════════\n`);
+  });
+
+  // Handle listen errors
+  server.on('error', (err) => {
+    console.error('Server error:', err);
+    process.exit(1);
+  });
+
+  // Configure middleware and routes
+  const allowedOrigins = [
+    'https://payment-processing-system-frontend.pages.dev',
+    'http://localhost:3000',
+    'http://localhost:5173',
+  ];
+
+  app.use(cors({
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  }));
+  // Razorpay webhooks need raw body for signature verification — register BEFORE express.json()
+  app.use('/api/webhooks/razorpay', express.raw({ type: 'application/json' }));
   app.use(express.json());
+
+  // Health check endpoint (doesn't require DB)
+  app.get('/api/health', (_req, res) => {
+    const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    res.json({ status: 'ok', uptime: process.uptime(), db: dbStatus });
+  });
 
   // Routes
   app.use('/api/auth', authRoutes);
   app.use('/api/payments', paymentRoutes);
   app.use('/api/webhooks', webhookRoutes);
+  app.use('/api/simulate', simulateRoutes);
 
-  // Health check
-  app.get('/api/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n══════════════════════════════════════════`);
-    console.log(`  NexusPay API — port ${PORT}`);
-    console.log(`  Razorpay: ${process.env.RAZORPAY_KEY_ID}`);
-    console.log(`══════════════════════════════════════════\n`);
-  });
+  // Connect to MongoDB (don't block server startup)
+  const MONGODB_URI = process.env.MONGODB_URI;
+  if (!MONGODB_URI) {
+    console.error('[MongoDB] MONGODB_URI not set');
+  } else {
+    try {
+      await mongoose.connect(MONGODB_URI);
+      console.log('[MongoDB] Connected');
+      console.log(`[Razorpay] Key: ${process.env.RAZORPAY_KEY_ID}`);
+    } catch (err) {
+      console.error('[MongoDB] Connection failed:', err);
+      // Continue running even if DB fails initially (for readiness probes)
+    }
+  }
 }
 
 main().catch(err => {
